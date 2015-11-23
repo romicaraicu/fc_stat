@@ -1,0 +1,200 @@
+#!/usr/bin/perl
+#
+#    Copyright (C) 2015  Allan McAleavy
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License along
+#    with this program; if not, write to the Free Software Foundation, Inc.,
+#    51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#
+#   (http://www.gnu.org/copyleft/gpl.html)
+#   23-11-2015 Allan McAleavy Created this.
+#
+
+use strict;
+use warnings;
+use Switch;
+use Getopt::Long;
+$| = 1;
+
+my $interval;
+my $count;
+my %io_data;
+my $iostat=0;
+my $tim=0;
+
+my $tot_reads=0;
+my $tot_writes=0;
+my $tot_io=0;
+my $tot_mb_read=0;
+my $tot_mb_write=0;
+my $tot_mb_tput=0;
+
+
+
+GetOptions (
+'interval=i' =>\$interval,
+'count=i'    =>\$count
+) or die <<USAGE_END;
+USAGE: $0 [options]
+        --interval | -i             # mpstat sample interval
+        --count    | -c             # mpstat count
+    eg,
+        $0 -i 1 -c 20
+USAGE_END
+
+sub build_disk
+{
+open(DIR,"/bin/ls ./targets/ |") || die "Can't run lscpu - $!";
+while (<DIR>)
+{
+      chomp;
+      my($disk)=split(",",$_);
+      if ( $_ =~ /^fc_/ )
+      {
+          my $hba=$_;
+          open(FILE,"./targets/$_" ) || die "Cant open HBA file in targets directory \n" ;
+          while (<FILE>)
+          {
+            chomp();
+            my $disk = $_ ;
+            $io_data{$hba}{$disk}{r} = 0 ;
+            $io_data{$hba}{$disk}{w} = 0 ;
+            $io_data{$hba}{$disk}{rmb} = 0 ;
+            $io_data{$hba}{$disk}{wmb} = 0 ;
+            $io_data{$hba}{$disk}{aw} = 0 ;
+            $io_data{$hba}{$disk}{st} = 0 ;
+            $io_data{$hba}{$disk}{amax} = 0 ;
+            $io_data{$hba}{$disk}{amax} = 0 ;
+
+          }
+          close(FILE)
+      }
+}
+close(DIR);
+}
+
+sub update_disk
+{
+    my $r = shift;
+    my $w = shift;
+    my $rmb = shift;
+    my $wmb = shift;
+    my $aw = shift ;
+    my $st = shift ;
+    my $disk = shift ;
+
+    foreach my $hba (keys %io_data)
+    {
+        foreach my $d (keys %{$io_data{$hba}})
+        {
+           if ( $d eq $disk )
+           {
+                        $io_data{$hba}{$disk}{r} = $r;
+                        $io_data{$hba}{$disk}{w} = $w;
+                        $io_data{$hba}{$disk}{rmb} = $rmb;
+                        $io_data{$hba}{$disk}{wmb} = $wmb;
+                        $io_data{$hba}{$disk}{aw} = $aw;
+                        $io_data{$hba}{$disk}{st} = $st;
+          }
+        }
+    }
+}
+
+
+sub print_disk
+{
+    my $ma=0;   # max await
+    my $ms=0;   # max svc_t
+
+    printf("%s %14s %12s %8s %8s %8s %8s %8s %8s %8s\n","Time","Target","Reads","Writes","IOPS","Read MB","Write MB","Tot MB","Max Await","Max Svc");
+    printf("-------------------------------------------------------------------------------------------------\n") ;
+
+    foreach my $hba (sort keys %io_data)
+    {
+
+       foreach my $disk ( sort keys %{$io_data{$hba}} )
+       {
+        $tot_reads = $tot_reads + $io_data{$hba}{$disk}{r};
+        $tot_writes = $tot_writes + $io_data{$hba}{$disk}{w};
+        $tot_io = $tot_reads + $tot_writes ;
+        $tot_mb_read = $tot_mb_read + $io_data{$hba}{$disk}{rmb};
+        $tot_mb_write = $tot_mb_write + $io_data{$hba}{$disk}{wmb};
+        $tot_mb_tput = $tot_mb_read + $tot_mb_write ;
+
+        if ($io_data{$hba}{$disk}{aw} > $ma )
+        {
+           $ma = $io_data{$hba}{$disk}{aw};
+        }
+
+       if ($io_data{$hba}{$disk}{st} > $ms )
+        {
+           $ms = $io_data{$hba}{$disk}{st};
+        }
+
+       }
+
+       printf("%s %14s %8d %8d %8d %8d %8d %8d %8.2f %8.2f\n",$tim,$hba,$tot_reads,$tot_writes,$tot_io,$tot_mb_read,$tot_mb_write,$tot_mb_tput,$ma,$ms);
+
+    $tot_reads=0;
+    $tot_writes=0;
+    $tot_io=0;
+    $tot_mb_read=0;
+    $tot_mb_write=0;
+    $tot_mb_tput=0;
+    $ma=0;
+    $ms=0;
+    }
+
+}
+
+build_disk();
+
+if (!defined $interval )  { $interval=1}
+if (!defined $count )  { $count=999999}
+
+open(FILE,"/usr/bin/iostat -txm " . $interval . " " . $count . " |") || die "Can't open /usr/bin/iostat - $!";
+while (<FILE>)
+{
+  chomp;
+  next if (/Linux/);   # ignore header
+  next if (/avg-cpu/);   # ignore header
+  next if (/Device/);   # ignore header
+  next if (/VxVM/);   # ignore veritas volumes
+
+  if (($_ =~ /^$/)  && ( $iostat == 0 ))
+  {
+      $iostat=1;
+      next ;
+  }
+
+  if ( $_ =~ /[0-9][0-9]:/ )
+  {
+    my($dte,$tm) = split(" ",$_);
+    $tim = $tm ;
+  }
+
+  if ( $_ =~ /^sd/ )
+  {
+     my($dev,$rrqm,$wrqm,$rs,$ws,$rmb,$wmb,$rqsz,$qusz,$await,$svc,$util) = split(" ",$_);
+     update_disk(int($rs),int($ws),int($rmb),int($wmb),$await,$svc,$dev);
+  }
+
+
+  if (( $_ =~ /^$/ ) && ( $iostat == 1))
+  {
+     print_disk();
+     #sleep($interval);
+     $iostat = 0 ;
+  }
+}
+close(FILE);
