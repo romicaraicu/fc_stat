@@ -1,7 +1,7 @@
 # fc_stat
 iostat parser for linux to show HBA throughput. 
 
-To run , we first need to get a mapping of devices to HBAs this is done by parsing the /sys/block/<dev> symbolic link or by looking at the /sys/block/<dev>/device link.
+To run , we first need to get a mapping of devices to HBAs this is done by parsing the /sys/block/dev symbolic link or by looking at the /sys/block/dev/device link.
 
 ## fc_map.ksh 
 
